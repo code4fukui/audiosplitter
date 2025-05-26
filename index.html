@@ -1,0 +1,145 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="icon" href="data:">
+<title>audio splitter</title>
+<style>
+body {
+  font-family: sans-serif;
+  padding: 1em;
+}
+h1 {
+  margin-bottom: 0;
+}
+header {
+  display: block;
+  padding-bottom: .5em;
+  border-bottom: 1px solid gray;
+}
+label, input, select {
+  display: block;
+  margin-top: 1em;
+}
+a {
+  color: gray !important;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>audio splitter</h1>
+  <div>MP3無音分割&タイムレコード出力</div>
+</header>
+
+<label>MP3ファイルを設定
+  <input type="file" id="mp3file" accept="audio/mp3">
+</label>
+<label>無音しきい値（0.0〜1.0）
+  <input type="number" id="inp_threshold" value="0.01" step="0.001" min="0" max="1">
+</label>
+<label>無音時間（秒）
+  <input type="number" id="inp_minSilence" value="0.3" step="0.1" min="0">
+</label>
+<label>分析結果
+  <div id="results">-</div>
+</label>
+<br>
+<button id="btn_download" disabled>ダウンロード</button>
+
+<script type="module">
+import { MP3 } from "https://code4fukui.github.io/MP3/MP3.js";
+import { downloadZip } from "https://code4sabae.github.io/js/downloadZip.js";
+import { CSV } from "https://js.sabae.cc/CSV.js";
+
+mp3file.oninput = async () => {
+  const file = mp3file.files[0];
+  if (!file) {
+    alert("ファイルを選択してください");
+    return;
+  }
+  btn_download.disabled = false;
+
+  const audioCtx = new AudioContext();
+  const arrayBuffer = await file.arrayBuffer();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  const sampleRate = audioBuffer.sampleRate;
+  const channelData = audioBuffer.getChannelData(0);
+
+  const segments = [];
+  const makeSegments = () => {
+    segments.length = 0;
+
+    const threshold = parseFloat(inp_threshold.value);
+    const minSilenceSec = parseFloat(inp_minSilence.value);
+    const minSilenceSamples = sampleRate * minSilenceSec;
+
+    let startSample = 0;
+    let silenceCount = 0;
+    let isSilence = true;
+
+    for (let i = 0; i < channelData.length; i++) {
+      const islow = Math.abs(channelData[i]) < threshold;
+      if (isSilence) {
+        if (!islow) {
+          startSample = i;
+          silenceCount = 0;
+          isSilence = false;
+        }
+      } else {
+        if (islow) {
+          silenceCount++;
+          if (silenceCount >= minSilenceSamples) {
+            segments.push([startSample, i]);
+            isSilence = true;
+          }
+        } else {
+          silenceCount = 0;        
+        }
+      }
+    }
+    if (!isSilence) {
+      segments.push([startSample, channelData.length]);
+    }
+    results.innerHTML = `${segments.length}分割します<br>`;
+    console.log(segments);
+  };
+  inp_threshold.onchange = inp_minSilence.onchange = () => makeSegments();
+  makeSegments();
+
+  btn_download.onclick = async () => {
+    const times = [];  
+    const files = [];
+
+    await Promise.all(segments.map(async ([s, e], idx) => {
+      const segmentBuffer = audioCtx.createBuffer(1, e - s, sampleRate);
+      segmentBuffer.copyToChannel(channelData.slice(s, e), 0);
+
+      const samples = segmentBuffer.getChannelData(0);
+      const mp3bin = await MP3.encode(samples, {
+        sampleRate,
+        //vbrQuality: selquality.value, // 0-9 default 5
+        //debug: true, // boolean
+      });
+      files.push({
+        name: `segment_${idx + 1}.mp3`,
+        data: mp3bin,
+      });
+      times.push({
+        start_sec: (s / sampleRate).toFixed(3),
+        end_sec: (e / sampleRate).toFixed(3),
+      });
+    }));
+
+    times.sort((a, b) => a.start_sec - b.start_sec);
+    files.push({
+      name: "segments.csv",
+      data: CSV.stringify(times),
+    });
+
+    downloadZip("segments.zip", files);
+  };
+};
+</script>
+
+<hr>
+<a href=https://github.com/code4fukui/audiosplitter/>src on GitHub</a><br>
+
+</body>
+</html>
